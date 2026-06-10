@@ -1,0 +1,132 @@
+// SABER AM03 - Hybrid with Fixed h_w (Matching Colleague's Structure)
+// Test version to isolate h_w constraint speedup
+//
+// Changes from am03_hybrid.stan:
+// 1. h_w moved to data block (not sampled)
+// 2. Uses C++ forward model (forward_am03_ad)
+// 3. Everything else identical
+//
+// Expected: Should match colleague's ~15s performance
+
+functions {
+  // External C++ function for IOP calculation
+  matrix iop_from_oac_all(
+      vector wavelength,
+      vector a_w,
+      vector a0,
+      vector a1,
+      vector bb_w,
+      real chl,
+      real a_g_440,
+      real a_nap_440,
+      real a_g_s,
+      real a_nap_s,
+      real bb_p_550,
+      real bb_p_gamma
+  );
+  
+  // External C++ function for forward model
+  vector forward_am03_ad(
+      vector wavelength,
+      vector a,
+      vector bb,
+      int water_type,
+      real theta_sun_deg,
+      real theta_view_deg,
+      int shallow,
+      real h_w,
+      vector r_b
+  );
+}
+
+data {
+  int<lower=1> n_wl;
+  vector[n_wl] wavelength;
+  vector[n_wl] rrs_obs;
+  vector<lower=1e-12>[n_wl] sigma;
+
+  // Pre-interpolated LUTs on the same wavelength grid
+  vector[n_wl] a_w;
+  vector[n_wl] a0;
+  vector[n_wl] a1;
+  vector[n_wl] bb_w;
+
+  // Bottom library on the same wavelength grid
+  int<lower=1> n_benthic;
+  matrix[n_wl, n_benthic] r_b_matrix;
+
+  // Geometry / flags
+  int<lower=1,upper=2> water_type;
+  real theta_sun_deg;
+  real theta_view_deg;
+  int<lower=0,upper=1> shallow;
+  
+  // FIXED h_w (not sampled)
+  real<lower=0> h_w;
+}
+
+parameters {
+  real<lower=0.01, upper=100> chl;
+  real<lower=1e-6, upper=10> a_g_440;
+  real<lower=1e-6, upper=10> a_nap_440;
+  real<lower=1e-6, upper=1> bb_p_550;
+  
+  real<lower=0.001, upper=0.05> a_g_slope;
+  real<lower=0.2, upper=3.0> bb_p_gamma;
+  
+  // h_w removed from parameters!
+  simplex[n_benthic] r_b_fractions;
+  
+  real<lower=1e-6> sigma_rrs;
+}
+
+transformed parameters {
+  vector[n_wl] a;
+  vector[n_wl] bb;
+  vector[n_wl] r_b;
+  vector[n_wl] rrs_model;
+
+  // IOPs from OAC using C++ external function
+  {
+    real a_nap_s = 0.0116;
+    matrix[n_wl, 2] iop = iop_from_oac_all(
+      wavelength, a_w, a0, a1, bb_w,
+      chl, a_g_440, a_nap_440,
+      a_g_slope, a_nap_s,
+      bb_p_550, bb_p_gamma
+    );
+    a  = iop[, 1];
+    bb = iop[, 2];
+  }
+
+  // Bottom reflectance mixture
+  r_b = r_b_matrix * r_b_fractions;
+
+  // Forward RT model using C++ external function
+  rrs_model = forward_am03_ad(
+    wavelength, a, bb,
+    water_type, theta_sun_deg, theta_view_deg,
+    shallow, h_w, r_b
+  );
+}
+
+model {
+  // Priors (h_w prior removed since it's fixed)
+  chl ~ lognormal(log(1.0), 1.5);
+  a_g_440 ~ lognormal(log(0.05), 1.5);
+  a_nap_440 ~ lognormal(log(0.05), 1.5);
+  bb_p_550 ~ lognormal(log(0.01), 1.5);
+  
+  a_g_slope ~ lognormal(log(0.017), 0.3);
+  bb_p_gamma ~ lognormal(log(1.0), 0.5);
+  
+  sigma_rrs ~ normal(0, 0.01);
+
+  // Likelihood
+  rrs_obs ~ normal(rrs_model, sigma_rrs);
+}
+
+generated quantities {
+  vector[n_wl] rrs_hat = rrs_model;
+  real log_lik = normal_lpdf(rrs_obs | rrs_model, sigma_rrs);
+}

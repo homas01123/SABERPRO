@@ -1,0 +1,33 @@
+Package: SABERPRO
+Type: Package
+Title: SABER - Semi Analytical Bayesian Estimate Retrieval
+Version: 1.0.0.0000
+Authors@R: 
+    person("Soham", "Mukherjee", email = "saion523@gmail.com", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0001-9771-0778"))
+Description: Tools for modeling inherent optical properties (IOPs) and benthic parameters in aquatic environments
+    using modular, fast forward models based on radiative transfer principles.
+License: GPL (>= 3)
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+Depends: 
+    R (>= 3.5)
+SystemRequirements: pkg-config, gcc
+Imports: 
+    methods,
+    dplyr,
+    tibble,
+    tidyr,
+    magrittr,
+    stringr,
+    BayesianTools,
+    marqLevAlg,
+    lubridate,
+    pracma
+Suggests: 
+    knitr,
+    rmarkdown,
+    testthat,
+VignetteBuilder: knitr
+Config/roxygen2/version: 8.0.0

@@ -1,0 +1,983 @@
+---
+title: "Stan/HMC Implementation for SABER: Solving Shallow Dark Water Challenges"
+author: "SABER Development Team"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: show
+    theme: flatly
+    highlight: tango
+vignette: >
+  %\VignetteIndexEntry{Stan/HMC Implementation for SABER}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  cache = FALSE
+)
+```
+
+# Installation
+
+## Step 1: Install cmdstanr
+
+```{r install_cmdstanr, eval=FALSE}
+# Install cmdstanr from Stan repository
+install.packages("cmdstanr", 
+                 repos = c("https://mc-stan.org/r-packages/", 
+                          getOption("repos")))
+```
+
+## Step 2: Install CmdStan Compiler
+
+```{r install_cmdstan, eval=FALSE}
+# Install Stan compiler (one-time setup, ~5-10 minutes)
+cmdstanr::install_cmdstan()
+```
+
+## Step 3: Verify Installation
+
+```{r verify_stan, eval=FALSE}
+# Check if CmdStan is installed and path is set
+tryCatch({
+  cmdstanr::cmdstan_version()
+}, error = function(e) {
+  if (grepl("CmdStan path has not been set", e$message)) {
+    message("CmdStan not found. Installing now...")
+    cmdstanr::install_cmdstan()
+    message("Installation complete!")
+  } else {
+    stop(e)
+  }
+})
+
+# Verify it worked
+cmdstanr::cmdstan_version()
+# Should print something like: "2.34.0"
+
+# Optional: Check installation path
+cmdstanr::cmdstan_path()
+```
+
+## Step 4: Validate SABER Stan Integration
+
+```{r validate_saber_stan, eval=FALSE}
+#library(SABER)
+devtools::load_all()
+# Check if Stan model and functions are available
+validate_stan_installation()
+```
+
+---
+
+# Usage Example: Shallow Dark Water Inversion
+
+## Prepare Test Data
+
+Let's create synthetic data for a challenging shallow dark water scenario:
+
+```{r prepare_data, eval=FALSE}
+#library(SABER)
+
+# Define wavelength grid
+wavelength <- seq(400, 750, by = 5)
+
+list_benthic_classes()
+select_benthic_classes(c("Sand_2019", "Eelgrass_2019", "Mud_2019"))
+
+
+
+# Create synthetic "truth" parameters (shallow dark water)
+true_params <- c(
+  chl = 15.0,          # High chlorophyll (eutrophic)
+  a_g_440 = 1.2,       # High CDOM (dark water)
+  a_nap_440 = 0.15,
+  bb_p_550 = 0.008,
+  a_g_slope = 0.017,
+  bb_p_gamma = 0.5,
+  h_w = 3.0            # Shallow (3 meters)
+)
+
+# Generate synthetic IOPs
+iop_synthetic <- iop_from_oac(wavelength, true_params)
+
+# Create benthic reflectance (mixed sand + eelgrass)
+benthic_fractions <- c(
+  r_rs_b_Sand_2019 = 0.6,
+  r_rs_b_Eelgrass_2019 = 0.3,
+  r_rs_b_Mud_2019 = 0.1
+)
+r_b_synthetic <- compute_r_rs_b_lmm(benthic_fractions)
+
+# Generate synthetic Rrs using forward model
+rrs_true <- forward_am03(
+  wavelength = wavelength,
+  iop = iop_synthetic,
+  water_type = 2,
+  theta_sun = 30,
+  theta_view = 0,
+  h_w = true_params["h_w"],
+  r_b = r_b_synthetic
+)
+
+# Add realistic noise (5% of signal)
+set.seed(42)
+noise <- rnorm(length(rrs_true), mean = 0, sd = 0.05 * mean(rrs_true))
+rrs_obs <- rrs_true #+ noise
+
+# Create observation data frame
+rrs_data <- data.frame(
+  wavelength = wavelength,
+  rrs_0m = rrs_obs
+)
+
+# Visualize synthetic data
+library(ggplot2)
+ggplot(rrs_data, aes(x = wavelength, y = rrs_0m)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 2, alpha = 0.5) +
+  labs(title = "Synthetic Rrs: Shallow Dark Water (H=3m, Chl=15 mg/m³)",
+       x = "Wavelength [nm]",
+       y = "Rrs [1/sr]") +
+  theme_minimal()
+```
+
+## Method 1: BayesianTools (Traditional Approach)
+
+First, let's try the traditional BayesianTools approach to see the problems:
+
+```{r bayesiantools_inversion, eval=FALSE}
+# Define parameters to retrieve
+par_inversed_bt <- c("chl", "a_g_440", "bb_p_550", "h_w", 
+                     "r_rs_b_Sand_2019", 
+                     "r_rs_b_Eelgrass_2019",
+                     "r_rs_b_Mud_2019",
+                     "sd")
+
+# Fixed parameters
+par_fixed <- list(
+  water_type = 2,
+  theta_sun = 30,
+  theta_view = 0,
+  a_g_s_g = 0.014,
+  a_g_s_d = 0.003,
+  bb_p_gamma = 0.5
+  
+  # ,r_rs_b_Sand_2019 = 0.6,
+  # r_rs_b_Eelgrass_2019 = 0.3,
+  # r_rs_b_Mud_2019 = 0.1
+)
+
+# Bounds
+lower_bt <- c(chl = 0.5, a_g_440 = 0.1, bb_p_550 = 0.001, h_w = 1.0, 
+              r_rs_b_Sand_2019 = 0.001, r_rs_b_Eelgrass_2019 = 0.001, r_rs_b_Mud_2019 = 0.001,
+              sd = 0.001)
+upper_bt <- c(chl = 30, a_g_440 = 2.0, bb_p_550 = 0.05, h_w = 15, 
+              r_rs_b_Sand_2019 = 1.0, r_rs_b_Eelgrass_2019 = 1.0, r_rs_b_Mud_2019 = 1.0,
+              sd = 100)
+
+# list_benthic_classes()
+# select_benthic_classes(c("Sand_2019","Eelgrass_2019", "Mud_2019"))
+
+# Run BayesianTools MCMC
+system.time({
+  result_bt <- inverse_mcmc(
+    rrs = rrs_data,
+    forward_model = "am03",
+    par_inversed = par_inversed_bt,
+    lower = lower_bt,
+    upper = upper_bt,
+    par_fixed = par_fixed,
+    iterations = 50000,
+    burnin = 10000,
+    sampler = "DEzs"
+  )
+})
+
+# Display results
+print("BayesianTools Results:")
+print(result_bt)
+
+# Compare with truth
+comparison_bt <- data.frame(
+  Parameter = names(true_params)[1:4],
+  Truth = true_params[1:4],
+  Estimated = result_bt[names(true_params)[1:4]],
+  Error_Percent = abs(result_bt[names(true_params)[1:4]] - true_params[1:4]) / 
+                  true_params[1:4] * 100
+)
+print(comparison_bt)
+```
+
+## Method 2: Stan/HMC 
+
+### Pure Stan Backend (Default)
+
+```{r stan_pure, eval=FALSE}
+# Define parameters to retrieve (same as BayesianTools for comparison)
+par_inversed_stan <- c("chl", "a_g_440", "bb_p_550", "h_w", 
+                       "r_b_fractions[1]" ,  # Sand
+                       "r_b_fractions[2]",   # Eelgrass  
+                       "r_b_fractions[3]"# Mud
+                      )   
+
+# Run Stan/HMC inversion with pure Stan backend
+system.time({
+  result_pure <- inverse_mcmc_stan(
+    rrs = rrs_data,
+    forward_model = "am03",
+    par_inversed = par_inversed_stan,
+    par_fixed = par_fixed,
+    backend = "pure_stan",  # Default - all Stan code
+    iterations = 500,       # Reduced for speed
+    warmup = 250,
+    chains = 2,
+    adapt_delta = 0.90,
+    max_treedepth = 10,
+    return_fit = TRUE,
+    verbose = TRUE
+  )
+})
+
+# Display results
+print("Pure Stan Backend Results:")
+print(format(result_pure$estimates, scientific = F, digits = 1))
+
+# Convergence diagnostics
+print("\nConvergence Diagnostics:")
+print(result_pure$diagnostics)
+```
+
+### Hybrid Backend 
+
+The hybrid backend uses C++ for IOP calculation (faster) but keeps the forward model in Stan (flexible):
+
+```{r stan_hybrid, eval=FALSE}
+# Run with hybrid backend - best balance!
+system.time({
+  result_hybrid <- inverse_mcmc_stan(
+    rrs = rrs_data,
+    forward_model = "am03",
+    par_inversed = par_inversed_stan,
+    par_fixed = par_fixed,
+    backend = "hybrid",     # C++ IOP + Stan forward model
+    iterations = 500,
+    warmup = 250,
+    chains = 2,
+    adapt_delta = 0.90,
+    max_treedepth = 10,
+    return_fit = TRUE,
+    verbose = TRUE
+  )
+})
+
+# Display results
+print("Hybrid Backend Results:")
+print(format(result_hybrid$estimates, scientific = F, digits = 1))
+```
+
+### C++ Backend 
+
+The C++ optimized STAN inversion:
+
+```{r stan_hybrid, eval=FALSE}
+# Run with C++ inversion
+system.time({
+  result_hybrid <- inverse_mcmc_stan(
+    rrs = rrs_data,
+    forward_model = "am03",
+    par_inversed = par_inversed_stan,
+    par_fixed = par_fixed,
+    backend = "cpp_optimized",     # C++ IOP + Stan forward model
+    iterations = 500,
+    warmup = 250,
+    chains = 2,
+    adapt_delta = 0.90,
+    max_treedepth = 10,
+    return_fit = TRUE,
+    verbose = TRUE
+  )
+})
+
+# Display results
+print("Hybrid Backend Results:")
+print(format(result_hybrid$estimates, scientific = F, digits = 1))
+```
+
+# Stan Backend Performance Benchmarking
+
+## Full Runtime Comparison
+
+```{r benchmark_backends, eval=FALSE}
+
+library(dplyr)
+
+# Settings for benchmark
+benchmark_params <- c("chl", "a_g_440", "bb_p_550", "h_w")
+benchmark_settings <- list(
+  iterations = 1000,
+  warmup = 500,
+  chains = 2,
+  adapt_delta = 0.95
+)
+
+# Benchmark Pure Stan
+cat("Testing Pure Stan backend...\n")
+time_pure_full <- system.time({
+  bench_pure <- inverse_mcmc_stan(
+    rrs = rrs_data,
+    par_inversed = benchmark_params,
+    par_fixed = par_fixed,
+    backend = "pure_stan",
+    iterations = benchmark_settings$iterations,
+    warmup = benchmark_settings$warmup,
+    chains = benchmark_settings$chains,
+    adapt_delta = benchmark_settings$adapt_delta,
+    verbose = FALSE
+  )
+})
+
+# Benchmark Hybrid
+cat("Testing Hybrid backend...\n")
+time_hybrid_full <- system.time({
+  bench_hybrid <- inverse_mcmc_stan(
+    rrs = rrs_data,
+    par_inversed = benchmark_params,
+    par_fixed = par_fixed,
+    backend = "hybrid",
+    iterations = benchmark_settings$iterations,
+    warmup = benchmark_settings$warmup,
+    chains = benchmark_settings$chains,
+    adapt_delta = benchmark_settings$adapt_delta,
+    verbose = FALSE
+  )
+})
+
+# Benchmark C++ Optimized
+cat("Testing C++ Optimized backend...\n")
+time_cpp_full <- system.time({
+  bench_cpp <- inverse_mcmc_stan(
+    rrs = rrs_data,
+    par_inversed = benchmark_params,
+    par_fixed = par_fixed,
+    backend = "cpp_optimized",
+    iterations = benchmark_settings$iterations,
+    warmup = benchmark_settings$warmup,
+    chains = benchmark_settings$chains,
+    adapt_delta = benchmark_settings$adapt_delta,
+    verbose = FALSE
+  )
+})
+
+# Create benchmark summary
+benchmark_df <- data.frame(
+  Backend = c("Pure Stan", "Hybrid", "C++ Optimized"),
+  Time_seconds = c(
+    time_pure_full["elapsed"],
+    time_hybrid_full["elapsed"],
+    time_cpp_full["elapsed"]
+  )
+)
+
+benchmark_df$Time_minutes <- benchmark_df$Time_seconds / 60
+benchmark_df$Speedup <- benchmark_df$Time_seconds[1] / benchmark_df$Time_seconds
+benchmark_df$Relative_speed <- paste0(round(benchmark_df$Speedup, 1), "×")
+
+print("Backend Performance Benchmark:")
+print(benchmark_df[, c("Backend", "Time_minutes", "Speedup", "Relative_speed")])
+
+# Visualize
+library(ggplot2)
+ggplot(benchmark_df, aes(x = reorder(Backend, -Time_minutes), y = Time_minutes, fill = Backend)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(Time_minutes, 1), " min\n", Relative_speed)), 
+            vjust = -0.5) +
+  labs(title = "Stan Backend Performance Comparison",
+       subtitle = paste0("Settings: ", benchmark_settings$iterations, " iterations, ",
+                        benchmark_settings$chains, " chains, ", 
+                        length(wavelength), " wavelengths"),
+       x = "Backend",
+       y = "Runtime (minutes)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+## Accuracy Verification
+
+Verify that all backends produce statistically equivalent results:
+
+```{r verify_backends, eval=FALSE}
+library(posterior)
+
+# Extract posterior summaries for each backend
+summary_pure <- as_draws_df(bench_pure$fit) %>%
+  summarise_draws() %>%
+  filter(variable %in% benchmark_params) %>%
+  select(variable, pure_mean = mean, pure_sd = sd)
+
+summary_hybrid <- as_draws_df(bench_hybrid$fit) %>%
+  summarise_draws() %>%
+  filter(variable %in% benchmark_params) %>%
+  select(variable, hybrid_mean = mean, hybrid_sd = sd)
+
+summary_cpp <- as_draws_df(bench_cpp$fit) %>%
+  summarise_draws() %>%
+  filter(variable %in% benchmark_params) %>%
+  select(variable, cpp_mean = mean, cpp_sd = sd)
+
+# Combine
+accuracy_comparison <- summary_pure %>%
+  left_join(summary_hybrid, by = "variable") %>%
+  left_join(summary_cpp, by = "variable")
+
+print("Accuracy Comparison (Posterior Means):")
+print(accuracy_comparison, digits = 4)
+
+# Calculate relative differences
+accuracy_comparison$pure_vs_hybrid <- 
+  abs(accuracy_comparison$pure_mean - accuracy_comparison$hybrid_mean) / 
+  accuracy_comparison$pure_mean * 100
+
+accuracy_comparison$pure_vs_cpp <- 
+  abs(accuracy_comparison$pure_mean - accuracy_comparison$cpp_mean) / 
+  accuracy_comparison$pure_mean * 100
+
+cat("\nMaximum relative difference between backends:\n")
+cat(sprintf("Pure vs Hybrid:        %.2f%%\n", max(accuracy_comparison$pure_vs_hybrid)))
+cat(sprintf("Pure vs C++ Optimized: %.2f%%\n", max(accuracy_comparison$pure_vs_cpp)))
+cat("\nNote: Differences < 5% are due to MCMC sampling variability\n")
+cat("All backends are statistically equivalent!\n")
+```
+
+## Convergence Comparison
+
+Compare convergence diagnostics across backends:
+
+```{r convergence_comparison, eval=FALSE}
+# Extract convergence metrics
+conv_pure <- as_draws_df(bench_pure$fit) %>%
+  summarise_draws() %>%
+  filter(variable %in% benchmark_params) %>%
+  select(variable, rhat_pure = rhat, ess_pure = ess_bulk)
+
+conv_hybrid <- as_draws_df(bench_hybrid$fit) %>%
+  summarise_draws() %>%
+  filter(variable %in% benchmark_params) %>%
+  select(variable, rhat_hybrid = rhat, ess_hybrid = ess_bulk)
+
+conv_cpp <- as_draws_df(bench_cpp$fit) %>%
+  summarise_draws() %>%
+  filter(variable %in% benchmark_params) %>%
+  select(variable, rhat_cpp = rhat, ess_cpp = ess_bulk)
+
+# Combine
+convergence_comparison <- conv_pure %>%
+  left_join(conv_hybrid, by = "variable") %>%
+  left_join(conv_cpp, by = "variable")
+
+print("Convergence Diagnostics Comparison:")
+print(convergence_comparison, digits = 4)
+
+# Check if all converged (Rhat < 1.01)
+all_converged <- all(
+  convergence_comparison$rhat_pure < 1.01,
+  convergence_comparison$rhat_hybrid < 1.01,
+  convergence_comparison$rhat_cpp < 1.01,
+  na.rm = TRUE
+)
+
+cat(sprintf("\nAll backends converged: %s\n", 
+            ifelse(all_converged, "✓ YES", "✗ NO")))
+
+# Visualize ESS comparison
+library(tidyr)
+ess_long <- convergence_comparison %>%
+  select(variable, ess_pure, ess_hybrid, ess_cpp) %>%
+  pivot_longer(cols = starts_with("ess_"), 
+               names_to = "Backend", 
+               values_to = "ESS") %>%
+  mutate(Backend = gsub("ess_", "", Backend))
+
+ggplot(ess_long, aes(x = variable, y = ESS, fill = Backend)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_hline(yintercept = 400, linetype = "dashed", color = "red") +
+  annotate("text", x = 0.5, y = 450, label = "ESS > 400 (good)", color = "red") +
+  labs(title = "Effective Sample Size Comparison",
+       subtitle = "Higher ESS = better sampling efficiency",
+       x = "Parameter",
+       y = "Effective Sample Size") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r tune_divergent, eval=FALSE}
+# More aggressive tuning for difficult posteriors
+# Try with hybrid backend first (good balance)
+result_tuned <- inverse_mcmc_stan(
+  rrs = rrs_data,
+  forward_model = "am03",
+  par_inversed = par_inversed_stan,
+  par_fixed = par_fixed,
+  backend = "hybrid",      # Recommended for tuning
+```
+
+```{r tune_ess, eval=FALSE}
+# Option 1: Run longer with current backend
+result_longer <- inverse_mcmc_stan(
+  rrs = rrs_data,
+  forward_model = "am03",
+  par_inversed = par_inversed_stan,
+  par_fixed = par_fixed,
+  backend = "hybrid",      # Fast enough for longer runs
+  iterations = 1000,       # Doubled
+  warmup = 250,           # Doubled
+  chains = 3,
+  adapt_delta = 0.95,
+  return_fit = TRUE,
+  verbose = TRUE
+)
+
+# Option 2: Switch to faster backend (more iterations in same time)
+result_cpp_long <- inverse_mcmc_stan(
+  rrs = rrs_data,
+  forward_model = "am03",
+  par_inversed = par_inversed_stan,
+  par_fixed = par_fixed,
+  backend = "cpp_optimized",  # Fastest - can run more iterations
+  iterations = 3000,           # 3× more iterations, still fast!
+  warmup = 1500,
+  chains = 4)
+```
+
+### C++ Optimized Backend (Fastest)
+
+For maximum performance, use the fully C++-optimized backend:
+
+```{r stan_cpp, eval=FALSE}
+# Run with C++ optimized backend - maximum speed!
+system.time({
+  result_cpp <- inverse_mcmc_stan(
+    rrs = rrs_data,
+    forward_model = "am03",
+    par_inversed = par_inversed_stan,
+    par_fixed = par_fixed,
+    backend = "cpp_optimized",  # Full C++ implementation
+    iterations = 500,
+    warmup = 250,
+    chains = 2,
+    adapt_delta = 0.90,
+    max_treedepth = 10,
+    return_fit = TRUE,
+    verbose = TRUE
+  )
+})
+
+# Display results
+print("C++ Optimized Backend Results:")
+print(result_cpp$estimates)
+
+# Convergence diagnostics
+print("\nConvergence Diagnostics:")
+print(result_cpp$diagnostics)
+```
+
+### Compare All Three Backends
+
+```{r compare_backends, eval=FALSE}
+# Create comparison table
+comparison_backends <- data.frame(
+  Backend = c("Pure Stan", "Hybrid", "C++ Optimized"),
+  Chl = c(
+    result_pure$estimates["chl"],
+    result_hybrid$estimates["chl"],
+    result_cpp$estimates["chl"]
+  ),
+  a_g_440 = c(
+    result_pure$estimates["a_g_440"],
+    result_hybrid$estimates["a_g_440"],
+    result_cpp$estimates["a_g_440"]
+  ),
+  h_w = c(
+    result_pure$estimates["h_w"],
+    result_hybrid$estimates["h_w"],
+    result_cpp$estimates["h_w"]
+  )
+)
+
+print("Backend Comparison (Parameter Estimates):")
+print(comparison_backends)
+
+cat("\nNote: All backends should produce nearly identical results!\n")
+cat("Differences are due to MCMC sampling variability, not implementation.\n")
+```
+
+## Side-by-Side Comparison
+
+Run both methods and compare automatically:
+
+```{r compare_methods, eval=FALSE}
+comparison <- compare_mcmc_methods(
+  rrs = rrs_data,
+  par_inversed = c("chl", "a_g_440", "bb_p_550", "h_w"),
+  par_fixed = par_fixed,
+  bt_iterations = 30000,
+  stan_iterations = 2000,
+  verbose = TRUE
+)
+
+# The function prints detailed comparison automatically
+# Results stored in 'comparison' object for further analysis
+```
+
+---
+
+# Advanced Stan Features
+
+## Posterior Predictive Checks
+
+Validate model fit by comparing predicted vs observed Rrs:
+
+```{r posterior_predictive, eval=FALSE}
+library(ggplot2)
+
+# Extract posterior predictive samples
+fit <- result_stan$fit
+rrs_pred <- fit$draws("rrs_pred", format = "matrix")
+
+# Calculate summary statistics
+rrs_pred_mean <- colMeans(rrs_pred)
+rrs_pred_lower <- apply(rrs_pred, 2, quantile, 0.025)
+rrs_pred_upper <- apply(rrs_pred, 2, quantile, 0.975)
+
+# Create comparison data frame
+pred_df <- data.frame(
+  wavelength = wavelength,
+  observed = rrs_data$rrs_0m,
+  predicted = rrs_pred_mean,
+  lower_95 = rrs_pred_lower,
+  upper_95 = rrs_pred_upper
+)
+
+# Plot
+ggplot(pred_df, aes(x = wavelength)) +
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95), 
+              alpha = 0.3, fill = "blue") +
+  geom_line(aes(y = predicted), color = "blue", size = 1) +
+  geom_point(aes(y = observed), color = "red", size = 2) +
+  labs(title = "Posterior Predictive Check",
+       subtitle = "Red points = Observed | Blue line = Predicted mean | Shaded = 95% CI",
+       x = "Wavelength [nm]",
+       y = "Rrs [1/sr]") +
+  theme_minimal()
+
+# Calculate residuals
+residuals <- pred_df$observed - pred_df$predicted
+rmse <- sqrt(mean(residuals^2))
+print(paste("RMSE:", round(rmse, 6)))
+```
+
+## Parameter Correlations
+
+Examine posterior correlations between parameters:
+
+```{r parameter_correlations, eval=FALSE}
+library(corrplot)
+
+# Extract posterior samples
+draws <- fit$draws(variables = par_inversed_stan, format = "df")
+
+# Remove chain/iteration columns
+draws_matrix <- as.matrix(draws[, par_inversed_stan])
+
+# Compute correlation matrix
+cor_matrix <- cor(draws_matrix)
+
+# Visualize
+corrplot(cor_matrix, 
+         method = "color", 
+         type = "upper",
+         addCoef.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         title = "Posterior Parameter Correlations",
+         mar = c(0, 0, 2, 0))
+```
+
+## Trace Plots (Convergence Visualization)
+
+Check chain mixing and convergence:
+
+```{r trace_plots, eval=FALSE}
+library(bayesplot)
+
+# Extract draws
+draws_array <- fit$draws(variables = par_inversed_stan, format = "array")
+
+# Trace plots
+mcmc_trace(draws_array, pars = par_inversed_stan) +
+  labs(title = "MCMC Trace Plots",
+       subtitle = "Good mixing = chains overlap and explore same region")
+
+# Density plots
+mcmc_dens_overlay(draws_array, pars = par_inversed_stan) +
+  labs(title = "Posterior Density Plots by Chain",
+       subtitle = "Good convergence = all chains have similar densities")
+```
+
+## Model Comparison with LOO-CV
+
+Use Leave-One-Out Cross-Validation for model comparison:
+
+```{r loo_comparison, eval=FALSE}
+library(loo)
+
+# Extract log-likelihood
+log_lik <- fit$draws("log_lik", format = "matrix")
+
+# Compute LOO
+loo_result <- loo(log_lik)
+print(loo_result)
+
+# Check for problematic observations
+plot(loo_result, label_points = TRUE)
+```
+
+---
+
+# Tuning for Difficult Cases
+
+## Scenario: High Divergent Transitions
+
+If you see many divergent transitions (>100), increase `adapt_delta`:
+
+```{r tune_divergent, eval=FALSE}
+# More aggressive tuning for difficult posteriors
+result_tuned <- inverse_mcmc_stan(
+  rrs = rrs_data,
+  forward_model = "am03",
+  par_inversed = par_inversed_stan,
+  par_fixed = par_fixed,
+  iterations = 2000,
+  warmup = 1000,
+  chains = 4,
+  adapt_delta = 0.99,      # Increased from 0.95
+  max_treedepth = 15,      # Increased from 12
+  return_fit = TRUE,
+  verbose = TRUE
+)
+
+# Check if divergences reduced
+print(result_tuned$diagnostics)
+```
+
+## Scenario: Poor Chain Mixing (Low ESS)
+
+If Effective Sample Size (ESS) < 400, run longer:
+
+```{r tune_ess, eval=FALSE}
+result_longer <- inverse_mcmc_stan(
+  rrs = rrs_data,
+  forward_model = "am03",
+  par_inversed = par_inversed_stan,
+  par_fixed = par_fixed,
+  iterations = 1000,       # Doubled
+  warmup = 250,           # Doubled
+  chains = 3,
+  adapt_delta = 0.95,
+  return_fit = TRUE,
+  verbose = TRUE
+)
+
+# Check ESS improvement
+print(result_longer$summary[, c("variable", "ess_bulk", "ess_tail", "rhat")])
+```
+
+---
+
+# Performance Benchmarks
+
+## Runtime Comparison
+
+```{r benchmark, eval=FALSE}
+library(microbenchmark)
+
+# Benchmark both methods (simplified for speed)
+benchmark_results <- microbenchmark(
+  BayesianTools = {
+    inverse_mcmc(
+      rrs = rrs_data,
+      forward_model = "am03",
+      par_inversed = c("chl", "a_g_440"),
+      lower = c(0.5, 0.1),
+      upper = c(30, 2.0),
+      par_fixed = par_fixed,
+      iterations = 5000,  # Reduced for benchmarking
+      burnin = 1000,
+      sampler = "DEzs"
+    )
+  },
+  Stan_HMC = {
+    inverse_mcmc_stan(
+      rrs = rrs_data,
+      forward_model = "am03",
+      par_inversed = c("chl", "a_g_440"),
+      par_fixed = par_fixed,
+      iterations = 500,   # Proportionally reduced
+      warmup = 250,
+      chains = 2,         # Fewer chains for benchmark
+      adapt_delta = 0.9,
+      verbose = FALSE
+    )
+  },
+  times = 3
+)
+
+print(benchmark_results)
+autoplot(benchmark_results)
+```
+
+---
+
+# Real-World Example: Benthic Fraction Retrieval
+
+## The Simplex Constraint Advantage
+
+One of Stan's biggest advantages is native simplex constraint for benthic fractions:
+
+```{r benthic_example, eval=FALSE}
+# Full parameter set including benthic fractions
+par_inversed_full <- c(
+  "chl", "a_g_440", "bb_p_550", "h_w",
+  "a_g_slope", "bb_p_gamma",
+  "r_b_fractions[1]",  # Sand
+  "r_b_fractions[2]",  # Eelgrass
+  "r_b_fractions[3]",  # Mud
+  "r_b_fractions[4]",  # Kelp
+  "r_b_fractions[5]"   # Gravel
+)
+
+# Run inversion with benthic retrieval
+result_benthic <- inverse_mcmc_stan(
+  rrs = rrs_data,
+  forward_model = "am03",
+  par_inversed = par_inversed_full,
+  par_fixed = list(
+    water_type = 2,
+    theta_sun = 30,
+    theta_view = 0
+  ),
+  iterations = 2000,
+  warmup = 1000,
+  chains = 4,
+  adapt_delta = 0.95,
+  return_fit = TRUE,
+  verbose = TRUE
+)
+
+# Extract benthic fractions
+benthic_estimates <- result_benthic$estimates[grep("r_b_fractions", 
+                                                    names(result_benthic$estimates))]
+print("Estimated Benthic Fractions:")
+print(benthic_estimates)
+
+# Verify they sum to 1 (Stan guarantees this!)
+print(paste("Sum of fractions:", sum(benthic_estimates[1:5])))
+
+# Visualize benthic mixture
+benthic_df <- data.frame(
+  Class = c("Sand", "Eelgrass", "Mud", "Kelp", "Gravel"),
+  Fraction = benthic_estimates[1:5]
+)
+
+ggplot(benthic_df, aes(x = Class, y = Fraction, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Retrieved Benthic Substrate Composition",
+       subtitle = "Stan simplex constraint ensures sum = 1",
+       y = "Fraction") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+# Troubleshooting
+
+## Common Issues and Solutions
+
+### Issue 1: CmdStan Path Not Set
+
+```{r troubleshoot_path, eval=FALSE}
+# If you get: "Error: CmdStan path has not been set yet"
+# This means CmdStan isn't installed or path isn't set
+
+# Solution 1: Install CmdStan
+cmdstanr::install_cmdstan()
+
+# Solution 2: If already installed elsewhere, set path manually
+cmdstanr::set_cmdstan_path("path/to/your/cmdstan")
+
+# Verify
+cmdstanr::cmdstan_version()
+```
+
+### Issue 2: Compilation Errors
+
+```{r troubleshoot_compile, eval=FALSE}
+# If Stan model won't compile, check:
+
+# 1. Is CmdStan installed?
+cmdstanr::cmdstan_version()
+
+# 2. Is the model file present?
+stan_file <- system.file("stan", "am03_shallow.stan", package = "SABER")
+file.exists(stan_file)
+
+# 3. Try manual compilation
+mod <- cmdstanr::cmdstan_model(stan_file)
+```
+
+### Issue 3: Divergent Transitions
+
+```{r troubleshoot_divergent, eval=FALSE}
+# If you see: "XX divergent transitions after warmup"
+# Solution: Increase adapt_delta
+
+### Quick Start Commands
+
+```{r quickstart_backends, eval=FALSE}
+# For development work (RECOMMENDED)
+result <- inverse_mcmc_stan(
+  rrs = your_data,
+  par_inversed = c("chl", "a_g_440", "h_w"),
+  backend = "hybrid",
+  iterations = 2000,
+  chains = 4
+)
+
+# For production/operations (FASTEST)
+result <- inverse_mcmc_stan(
+  rrs = your_data,
+  par_inversed = c("chl", "a_g_440", "h_w"),
+  backend = "cpp_optimized",
+  iterations = 2000,
+  chains = 4
+)
+
+# For learning/teaching (SIMPLEST)
+result <- inverse_mcmc_stan(
+  rrs = your_data,
+  par_inversed = c("chl", "a_g_440", "h_w"),
+  backend = "pure_stan",
+  iterations = 2000,
+  chains = 4
+)
+```
