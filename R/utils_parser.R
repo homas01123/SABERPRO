@@ -167,25 +167,73 @@ parse_inverse_parameter <- function(
 }
 
 # Per-observation empirical prior modes for OAC parameters.
-# chl     : OC3 polynomial (O'Reilly et al. 1998)
+# chl     : OC3 polynomial (O'Reilly et al. 1998) or NIRB (Martin 2025)
 # a_dg_440: blue-ratio absorption proxy
 # bb_p_550: green Rrs proxy (Gordon et al. 1988)
+# .estimate_prior_modes <- function(rrs_df) {
+#   defaults <- c(chl = 1.0, a_dg_440 = 0.10, bb_p_550 = 0.005)
+#   r <- tryCatch(
+#     setNames(
+#       approx(rrs_df$wavelength, rrs_df$rrs_0m, xout = c(412, 443, 490, 560), rule = 2)$y,
+#       c("r412", "r443", "r490", "r560")
+#     ),
+#     error = function(e) NULL
+#   )
+#   if (is.null(r) || any(!is.finite(r)) || any(r <= 0)) return(defaults)
+# 
+#   X        <- log10(max(r["r443"], r["r490"]) / r["r560"])
+#   chl      <- max(0.02, min(80, 10^(0.3272 - 2.994*X + 2.722*X^2 - 1.226*X^3 - 0.597*X^4)))
+#   a_dg_440 <- max(0.002, min(2.5, 10^(-1.3 - 1.8 * log10(r["r412"] / r["r443"]))))
+#   bb_p_550 <- max(0.001, min(0.20, r["r560"] * 4.0))
+
+#   c(chl = unname(chl), a_dg_440 = unname(a_dg_440), bb_p_550 = unname(bb_p_550))
+# }
+
 .estimate_prior_modes <- function(rrs_df) {
+  
   defaults <- c(chl = 1.0, a_dg_440 = 0.10, bb_p_550 = 0.005)
+  
   r <- tryCatch(
     setNames(
-      approx(rrs_df$wavelength, rrs_df$rrs_0m, xout = c(412, 443, 490, 560), rule = 2)$y,
-      c("r412", "r443", "r490", "r560")
+  approx(rrs_df$wavelength, rrs_df$rrs_0m, xout = c(412, 443, 490, 560, 665, 705), rule = 2)$y,
+      c("r412", "r443", "r490", "r560", "r665", "r705")
     ),
     error = function(e) NULL
   )
-  if (is.null(r) || any(!is.finite(r)) || any(r <= 0)) return(defaults)
-
-  X        <- log10(max(r["r443"], r["r490"]) / r["r560"])
-  chl      <- max(0.02, min(80, 10^(0.3272 - 2.994*X + 2.722*X^2 - 1.226*X^3 - 0.597*X^4)))
-  a_dg_440 <- max(0.002, min(2.5, 10^(-1.3 - 1.8 * log10(r["r412"] / r["r443"]))))
-  bb_p_550 <- max(0.001, min(0.20, r["r560"] * 4.0))
-
+  
+  if (is.null(r) || any(!is.finite(r)) || any(r <= 0))
+    return(defaults)
+  
+  X <- log10(max(r["r443"], r["r490"]) / r["r560"])
+  
+  
+  # Chlorophyll prior
+ 
+  if (X >= 0) {
+    
+    # OC4
+    chl <- 10^(0.3272 - 2.994 * X + 2.722 * X^2 - 1.226 * X^3 - 0.597 * X^4)
+    
+    chl <- max(0.02, min(80, chl))
+    
+  } else {
+    
+    # NIRB
+    index <- r["r705"] / r["r443"]
+    
+    chl <- 11.2 * index^1.7
+    
+    chl <- max(1.0, min(500, chl))
+  }
+  
+  # Remaining priors
+  
+  a_dg_440 <- max(0.005,
+    min(2.0, 0.02 + 0.08 * (r["r560"] / r["r443"])))
+  
+  bb_p_550 <- max(0.0005,
+    min(0.05,0.003 + 0.01 * (r["r665"] / r["r560"])))
+  
   c(chl = unname(chl), a_dg_440 = unname(a_dg_440), bb_p_550 = unname(bb_p_550))
 }
 

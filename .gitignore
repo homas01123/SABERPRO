@@ -24,6 +24,7 @@ tests/
 *.txt
 *.csv
 *.xml
+AGENTS.md
 # but track package data files in inst/extdata
 !inst/extdata/*.csv
 !inst/extdata/*.txt
@@ -35,6 +36,7 @@ tests/
 /examples/**/bernoulli
 */bin/*
 */build/*
+inst/stan/*.exe
 # R‑package installation and staging
 .Rproj.user/
 .Rhistory

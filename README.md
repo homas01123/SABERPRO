@@ -1,8 +1,8 @@
-# SABERPRO — Semi-Analytical Bayesian Estimate Retrieval
+# SABERPRO - Semi-Analytical Bayesian Estimate Retrieval
 
-A semi-analytically parameterised aquatic radiative transfer model for retrieving posterior distributions of Optically Significant Constituents (OSCs), water depth, and benthic reflectance from remote sensing reflectance (Rrs).
+A semi-analytically coupled elastic and inelastic scattering resolved aquatic radiative transfer model for retrieving posterior distributions of Optically Significant Constituents (OSCs), water depth, benthic reflectance and phyotplankton fluorescence indicators from remote sensing reflectance (Rrs).
 
-**Creator and lead developer:** Soham Mukherjee  
+**Creator:** Soham Mukherjee  
 **Initial packaging:** Raphael Mabit  
 **Maintenance and feature integration:** Soham Mukherjee
 

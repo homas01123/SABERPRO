@@ -1,2 +1,6 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
+^tests$
+^data-raw$
+^AGENTS\.md$
+^notebooks$
