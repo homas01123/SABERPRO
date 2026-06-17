@@ -1,10 +1,4 @@
-// SABER AM03 Stan Model - C++ Optimized (Colleague's Approach)
-// Uses external C++ functions from rtm_stan_funcs.hpp for faster performance
-// 
-// PERFORMANCE: ~3-5x faster than pure Stan due to Eigen optimization
-// TRADEOFF: Requires C++ header, slightly more complex setup
-//
-// Author: Colleague (original), Integrated: 2026-01-15
+// SABER AM03 Stan Model - C++ Optimized
 
 functions {
   // External C++ function declarations (implementations in rtm_stan_funcs.hpp)

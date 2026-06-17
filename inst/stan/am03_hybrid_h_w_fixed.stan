@@ -1,12 +1,4 @@
-// SABER AM03 - Hybrid with Fixed h_w (Matching Colleague's Structure)
-// Test version to isolate h_w constraint speedup
-//
-// Changes from am03_hybrid.stan:
-// 1. h_w moved to data block (not sampled)
-// 2. Uses C++ forward model (forward_am03_ad)
-// 3. Everything else identical
-//
-// Expected: Should match colleague's ~15s performance
+// SABER AM03 - Hybrid with Fixed h_w
 
 functions {
   // External C++ function for IOP calculation

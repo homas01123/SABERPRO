@@ -1,15 +1,7 @@
-// SABER AM03 Stan Model - BEST OF BOTH WORLDS
-// Combines:
-// - Colleague's C++ IOP calculation (faster, better cache efficiency)
-// - Our vectorized forward model (readable, easier to modify)
-//
-// PERFORMANCE: ~2-3x faster than pure Stan (IOP is main bottleneck)
-// FLEXIBILITY: Forward model in Stan = easy to modify/experiment
-//
-// Author: SABER Team, 2026-01-15
+// SABER AM03 Stan Model 
 
 functions {
-  // External C++ function for IOP calculation (from colleague)
+  // External C++ function for IOP calculation
   matrix iop_from_oac_all(
       vector wavelength,
       vector a_w,
@@ -25,8 +17,7 @@ functions {
       real bb_p_gamma
   );
   
-  // Our own Stan forward model (vectorized)
-  // This is in Stan language for maximum flexibility
+  // Stan forward model (vectorized)
   real snell_law_angle(real theta_air_deg) {
     real n_air = 1.0;
     real n_water = 1.33;

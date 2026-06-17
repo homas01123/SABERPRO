@@ -6,16 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
-// ============================================================
 // SABER STAN C++ FUNCTIONS
 // External C++ functions for Stan models with automatic differentiation
-// 
-// These are templated C++ functions that work with Stan's autodiff system.
-// NO LINKING REQUIRED - this header is self-contained!
-//
-// Author: Colleague (from saber-lib-main)
-// Integrated: 2026-01-15
-// ============================================================
 
 // ---------- geometry helper (double only; angles are data) ----------
 inline void snell_law_double(double theta_view_deg, double theta_sun_deg,

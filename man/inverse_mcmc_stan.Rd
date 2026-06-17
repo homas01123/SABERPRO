@@ -64,7 +64,7 @@ Much more efficient than random-walk MCMC for complex posteriors, especially
 in shallow dark waters with low SNR.
 }
 \details{
-\strong{Why HMC/NUTS is better than DEzs/DREAMzs:}
+** HMC/NUTS vs DEzs/DREAMzs:**
 \enumerate{
 \item \strong{Gradient-guided exploration}: Uses log-posterior gradients to propose
 efficient moves, avoiding random walk behavior.
@@ -87,10 +87,10 @@ mixtures) are explored more thoroughly.
 \itemize{
 \item \code{"pure_stan"} (default): All code in Stan language, fully vectorized.
 Easy to modify, good performance (~10-20 min for 71 bands).
-\item \code{"cpp_optimized"}: Uses external C++ functions (colleague's approach).
+\item \code{"cpp_optimized"}: Uses external C++ functions.
 Fastest (~3-5 min), requires C++ header compilation.
-\item \code{"hybrid"}: C++ for IOP calculation (bottleneck), Stan for forward model.
-Balanced speed (~7-12 min) and flexibility. RECOMMENDED for development.
+\item \code{"hybrid"}: C++ for IOP calculation (possible bottleneck), Stan for forward model.
+Balanced speed (~7-12 min) and flexibility.
 }
 }
 \references{

@@ -25,11 +25,11 @@
 #'         If return_fit=TRUE, returns list with estimates and fit object.
 #'
 #' @details
-#' **Why HMC/NUTS is better than DEzs/DREAMzs:**
+#' ** HMC/NUTS vs DEzs/DREAMzs:**
 #' 
 #' 1. **Gradient-guided exploration**: Uses log-posterior gradients to propose
 #'    efficient moves, avoiding random walk behavior.
-#'    
+#'          
 #' 2. **Handles correlations**: Explores along posterior contours, not trapped
 #'    by parameter correlations (e.g., Chl vs a_g).
 #'    
@@ -50,11 +50,11 @@
 #' - `"pure_stan"` (default): All code in Stan language, fully vectorized.
 #'   Easy to modify, good performance (~10-20 min for 71 bands).
 #'   
-#' - `"cpp_optimized"`: Uses external C++ functions (colleague's approach).
+#' - `"cpp_optimized"`: Uses external C++ functions.
 #'   Fastest (~3-5 min), requires C++ header compilation.
 #'   
-#' - `"hybrid"`: C++ for IOP calculation (bottleneck), Stan for forward model.
-#'   Balanced speed (~7-12 min) and flexibility. RECOMMENDED for development.
+#' - `"hybrid"`: C++ for IOP calculation (possible bottleneck), Stan for forward model.
+#'   Balanced speed (~7-12 min) and flexibility.
 #'
 #' @references
 #' Hoffman, M. D., & Gelman, A. (2014). The No-U-Turn sampler: adaptively 
